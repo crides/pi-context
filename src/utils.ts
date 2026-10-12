@@ -12,7 +12,8 @@ export const formatTokens = (n: number | null | undefined) => {
 export const RetainedCodemodeOutputType = "pi-context-codemode-output";
 
 /** Identify internal context tools for timeline folding and interval estimates. */
-export const isContextTool = (name: string) => ["context_checkpoint", "context_timeline", "context_compact"].includes(name);
+// context_read is deliberately absent: its result is recovered task content, not management traffic.
+export const isContextTool = (name: string) => ["context_checkpoint", "context_timeline", "context_compact", "context_remove"].includes(name);
 
 /** Format Pi's window usage without confusing it with interval estimates. */
 export const formatContextUsage = (usage: ContextUsage | undefined, includeTokens = false): string => {

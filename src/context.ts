@@ -4,7 +4,7 @@ import {
   DynamicBorder,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text, Spacer } from "@earendil-works/pi-tui";
-import { estimateHistoryTokens, formatTokens, RetainedCodemodeOutputType } from "./utils.js";
+import { formatTokens, RetainedCodemodeOutputType } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("context", {
@@ -17,7 +17,8 @@ export default function (pi: ExtensionAPI) {
       }
 
       const sm = ctx.sessionManager as SessionManager;
-      const branch = sm.getBranch();
+      // The projection applies context edits, so removed content is not counted.
+      const messages = sm.buildSessionProjection().messages as any[];
       const systemPrompt = ctx.getSystemPrompt();
       const tools = pi.getActiveTools();
       const allTools = pi.getAllTools();
@@ -29,15 +30,18 @@ export default function (pi: ExtensionAPI) {
       let toolUseTokensRaw = 0;
       let toolResultTokensRaw = 0;
 
-      for (const entry of branch) {
-        if (entry.type === "message") {
-          const m = entry.message;
-          if (m.role === "user") {
-            if (typeof m.content === "string") msgTokensRaw += estimateTokens(m.content);
-            else if (Array.isArray(m.content)) {
-              for (const p of m.content) if (p.type === "text") msgTokensRaw += estimateTokens(p.text);
-            }
-          } else if (m.role === "assistant") {
+      const textTokens = (content: unknown): number => {
+        if (typeof content === "string") return estimateTokens(content);
+        if (!Array.isArray(content)) return 0;
+        return content.reduce((sum: number, p: any) => sum + (p?.type === "text" ? estimateTokens(p.text) : 0), 0);
+      };
+
+      for (const m of messages) {
+        switch (m.role) {
+          case "user":
+            msgTokensRaw += textTokens(m.content);
+            break;
+          case "assistant":
             if (typeof m.content === "string") msgTokensRaw += estimateTokens(m.content);
             else if (Array.isArray(m.content)) {
               for (const p of m.content) {
@@ -45,17 +49,20 @@ export default function (pi: ExtensionAPI) {
                 if (p.type === "toolCall") toolUseTokensRaw += estimateTokens(JSON.stringify(p));
               }
             }
-          } else if (m.role === "toolResult") {
-            if (Array.isArray(m.content)) {
-              for (const p of m.content) if (p.type === "text") toolResultTokensRaw += estimateTokens(p.text);
-            }
-          } else if (m.role === "bashExecution") {
+            break;
+          case "toolResult":
+            toolResultTokensRaw += textTokens(m.content);
+            break;
+          case "bashExecution":
             toolUseTokensRaw += estimateTokens(m.command || "");
-          }
-        } else if (entry.type === "branch_summary" || entry.type === "compaction") {
-          msgTokensRaw += estimateTokens(entry.summary || "");
-        } else if (entry.type === "custom_message" && entry.customType === RetainedCodemodeOutputType) {
-          toolResultTokensRaw += estimateHistoryTokens(entry);
+            break;
+          case "branchSummary":
+          case "compactionSummary":
+            msgTokensRaw += estimateTokens(m.summary || "");
+            break;
+          case "custom":
+            if (m.customType === RetainedCodemodeOutputType) toolResultTokensRaw += textTokens(m.content);
+            break;
         }
       }
 

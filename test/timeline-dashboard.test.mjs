@@ -40,11 +40,12 @@ for (const retained of [false, true]) {
             getActiveTools: () => [], getAllTools: () => [],
         });
         const content = [{ type: "text", text: "x".repeat(40000) }];
-        const entry = retained ? { type: "custom_message", customType: "pi-context-codemode-output", content }
-            : { type: "message", message: { role: "toolResult", toolName: "read", content } };
+        const message = retained
+            ? { role: "custom", customType: "pi-context-codemode-output", content, display: false, timestamp: 0 }
+            : { role: "toolResult", toolName: "read", toolCallId: "c", content, isError: false, timestamp: 0 };
         let rendered;
         await commands.get("context").handler("", {
-            sessionManager: { getBranch: () => [entry] }, getSystemPrompt: () => "",
+            sessionManager: { buildSessionProjection: () => ({ entries: [], messages: [message] }) }, getSystemPrompt: () => "",
             getContextUsage: () => ({ tokens: 10000, contextWindow: 20000, percent: 50 }),
             ui: {
                 notify: () => assert.fail("usage is available"),

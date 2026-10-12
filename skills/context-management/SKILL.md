@@ -18,6 +18,8 @@ Use only these tools:
 - `context_checkpoint`
 - `context_timeline`
 - `context_compact`
+- `context_remove`
+- `context_read`
 
 ## Working-set model
 
@@ -158,6 +160,21 @@ Strong signals to consider compaction:
 - side question arriving while stale process history is active
 
 Do not compact while exploration is still active, when the result is unstable, just because the skill triggered, or just because the user-visible task ended.
+
+### `context_remove`
+
+Use it when a large, stale span sits in the middle of the path but the work after it must stay raw — the case where no compact target works because every cut either keeps the noise or discards needed recent material.
+
+- `after` is kept; removal covers entries strictly after it through `until` (inclusive). Checkpoints fit naturally: `after: "<scope>-start"`, `until: "<scope>-done"`.
+- `until` must precede the current turn. To drop everything after a point, use `context_compact`.
+- Put the span's stable state in `summary` (findings, decisions, rejected leads, source pointers). Omit it only when the span has no lasting value.
+- Edits apply before your next request. Entry IDs, labels, and session history are unchanged; the timeline shows a `[REMOVED]` gap note and marks checkpoints inside as removed.
+- Cost: the provider cache is re-read from the span onward. Remove only when the span is large relative to everything after it. Apply the same continuation judgment as the compact gate.
+- One `context_remove` per turn; do not combine with `context_compact` in the same turn.
+
+### `context_read`
+
+Use it to recover a specific detail from a removed span or another branch, instead of guessing or redoing work. Pass `id` (and optionally `until`) from the gap note or timeline. Read only what the next action needs; prefer re-checking an external source (file, command) when that is cheaper.
 
 ## Compact gate
 

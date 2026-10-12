@@ -3,7 +3,10 @@ import {
     type SessionManager,
     type SessionEntry,
     type ExtensionCommandContext,
+    defineTool,
+    DynamicBorder,
 } from "@earendil-works/pi-coding-agent";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import {
     Type,
     type Static,
@@ -12,6 +15,7 @@ import {
     type ToolCall,
 } from "@earendil-works/pi-ai";
 import { describeHistoryInterval, estimateHistoryTokens, formatTokens, formatContextUsage, isContextTool as isInternal, parseCheckpointPhase, RetainedCodemodeOutputType } from "./utils.js";
+import { activeRemovals, collectEdits, planRemoval, readEntries, RemovalLabelPrefix, RemovalMarkerPrefix, removedIds, replacementText, validateRemoval, type RemovalPlan } from "./remove.js";
 
 // Define missing types locally as they are not exported from the main entry point
 interface SessionTreeNode {
@@ -102,13 +106,13 @@ export const didConversationAdvance = (
 
 // Match codemode's documented <parent id>/<n> IDs against actual transcript calls;
 // parent IDs are opaque and may themselves contain slashes. Never fall back to the leaf.
-const findCompactRequest = (branch: readonly SessionEntry[], toolCallId: string) => {
+const findCompactRequest = (branch: readonly SessionEntry[], toolCallId: string, toolName = "context_compact") => {
     for (let i = branch.length - 1; i >= 0; i--) {
         const entry = branch[i];
         if (entry.type !== "message" || entry.message.role !== "assistant") continue;
         for (const block of entry.message.content) {
             if (block.type !== "toolCall") continue;
-            if (block.id === toolCallId && block.name === "context_compact") {
+            if (block.id === toolCallId && block.name === toolName) {
                 return { requestLeaf: entry.id, codemodeToolCallId: undefined };
             }
             if (block.name === "codemode" && toolCallId.startsWith(`${block.id}/`) &&
@@ -159,6 +163,20 @@ const ContextCheckpointParams = Type.Object({
     target: Type.Optional(Type.String({ description: "Optional history node ID or checkpoint name to label. Defaults to the current meaningful position near the conversation head." })),
 });
 
+const ContextRemoveDescription = "Remove a span of earlier history from model context while keeping everything after it raw. Removes entries strictly after `after` through `until` (inclusive) and leaves a gap note (your summary, or an automatic one) in their place. Entries stay in session history with unchanged IDs; read them back with context_read. Applied before your next model request. The provider prefix cache is re-read from the span onward, so use it only when the removed span is large relative to what follows. To drop everything after a point, use context_compact instead.";
+const ContextRemoveParams = Type.Object({
+    after: Type.String({ description: "Checkpoint name, history node ID, or root. Kept; removal starts right after it." }),
+    until: Type.String({ description: "Checkpoint name or history node ID of the last entry to remove (inclusive). Must precede the current turn. Extended automatically to keep tool calls paired with their results." }),
+    summary: Type.Optional(Type.String({ description: "State worth keeping from the removed span: findings, decisions, rejected leads, pointers. Shown in the gap note. Omit for a pure removal." })),
+});
+
+const ContextReadDescription = "Read the original content of history entries, ignoring context edits. Use it to recover details from spans removed by context_remove, or from entries on other branches. Results are appended at the end of context; nothing is restored in place.";
+const ContextReadParams = Type.Object({
+    id: Type.String({ description: "History node ID or checkpoint name to read." }),
+    until: Type.Optional(Type.String({ description: "Optional later node ID or checkpoint name; reads the path from `id` through `until` (inclusive). `id` must be an ancestor of `until`." })),
+    maxChars: Type.Optional(Type.Number({ description: "Maximum characters of text to return (default: 20000)." })),
+});
+
 interface PendingCompactRequest extends Static<typeof ContextCompactParams> {
     tid: string;
     enrichedMessage: string;
@@ -172,6 +190,7 @@ interface PendingCompactRequest extends Static<typeof ContextCompactParams> {
 export default function (pi: ExtensionAPI) {
     let CommandCtx: ExtensionCommandContext | null = null;
     let CompactParams: PendingCompactRequest | null = null;
+    let PendingRemove: { requestLeaf: string; plan: RemovalPlan } | null = null;
     let runtimeActive = true;
     let pendingCommandContext: Promise<ExtensionCommandContext> | null = null;
     let resolveCommandContext: ((ctx: ExtensionCommandContext) => void) | undefined;
@@ -209,6 +228,7 @@ export default function (pi: ExtensionAPI) {
         runtimeActive = false;
         CommandCtx = null;
         CompactParams = null;
+        PendingRemove = null;
         rejectCommandContext?.(new Error("context_compact: session closed while acquiring command context."));
     });
 
@@ -312,7 +332,7 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
-    pi.registerTool({
+    const timelineTool = defineTool({
         name: "context_timeline",
         label: "Context Timeline",
         description: ContextTimelineDescription,
@@ -321,6 +341,9 @@ export default function (pi: ExtensionAPI) {
             const sm = ctx.sessionManager as SessionManager;
             const branch = sm.getBranch();
             const currentLeafId = sm.getLeafId();
+            const edits = collectEdits(branch);
+            const removals = activeRemovals(branch, edits);
+            const removed = removedIds(edits);
             const verbose = params.verbose ?? false;
             const limit = params.limit ?? 50;
 
@@ -340,6 +363,14 @@ export default function (pi: ExtensionAPI) {
             });
 
             const getMsgContent = (entry: SessionEntry): string => {
+                if (removals.has(entry.id)) {
+                    return (replacementText(edits.get(entry.id)) ?? "").slice(RemovalMarkerPrefix.length).trim();
+                }
+                if (removed.has(entry.id)) return "(removed from context)";
+                if (edits.has(entry.id)) {
+                    const text = replacementText(edits.get(entry.id));
+                    if (text !== undefined) return `(edited in context) ${text}`;
+                }
                 if (entry.type === "branch_summary" || entry.type === "compaction") {
                     const e = entry;
                     return e.summary || "[No summary provided]";
@@ -414,6 +445,11 @@ export default function (pi: ExtensionAPI) {
                 if (entry.id === currentLeafId) return true;
                 if (branch.length > 0 && entry.id === branch[0].id) return true;
 
+                // Removal gap notes are milestones; other removed entries show only if checkpointed.
+                if (removals.has(entry.id)) return true;
+                if (entry.type === "context_edit") return false;
+                if (removed.has(entry.id) && !sm.getLabel(entry.id)) return false;
+
                 // 2. Explicit checkpoints (labels) - only show the checkpointed node, not the label node itself
                 if (sm.getLabel(entry.id)) return true;
                 if (entry.type === 'label') return false; // Hide label nodes, they are redundant
@@ -455,7 +491,9 @@ export default function (pi: ExtensionAPI) {
             sequence.forEach((entry) => {
                 if (!visibleSequenceIds.has(entry.id)) {
                     // Off-path summaries never contribute to active-path intervals.
+                    // Removed content no longer occupies context, so it never counts toward folded intervals.
                     if (backboneIds.has(entry.id) && entry.type !== "custom" && entry.type !== "label" &&
+                        entry.type !== "context_edit" && !removed.has(entry.id) &&
                         (entry.type !== "custom_message" || entry.customType === RetainedCodemodeOutputType)) hiddenEntries.push(entry);
                     return;
                 }
@@ -463,7 +501,9 @@ export default function (pi: ExtensionAPI) {
                 flushHidden();
 
                 const isHead = entry.id === currentLeafId;
-                const label = sm.getLabel(entry.id);
+                // Gap-note labels exist for /tree; the [REMOVED] line already conveys them here.
+                const rawLabel = sm.getLabel(entry.id);
+                const label = rawLabel?.startsWith(RemovalLabelPrefix) ? undefined : rawLabel;
                 const content = getMsgContent(entry).replace(/\s+/g, " ");
 
                 let role = entry.type.toUpperCase();
@@ -483,6 +523,8 @@ export default function (pi: ExtensionAPI) {
                     role = "TOOL";
                 }
 
+                if (removals.has(entry.id)) role = "REMOVED";
+
                 // hide custom messages
                 if (role === "CUSTOM_MESSAGE") {
                     return
@@ -493,6 +535,7 @@ export default function (pi: ExtensionAPI) {
                 const stage = label ? parseCheckpointPhase(label)?.phase : undefined;
                 const meta = [isRoot ? "ROOT" : null, isHead ? "HEAD" : null,
                     !backboneIds.has(id) ? "off-path" : null,
+                    removed.has(id) ? "removed from context" : null,
                     label ? `checkpoint: ${label}` : null,
                     stage ? `phase: ${stage}` : null].filter(Boolean).join(", ");
 
@@ -509,6 +552,40 @@ export default function (pi: ExtensionAPI) {
             return { content: [{ type: "text", text: hud + "\n" + (lines.join("\n") || "(Root Path Only)") }], details: {} };
         },
     });
+    pi.registerTool(timelineTool);
+
+    pi.registerCommand("timeline", {
+        description: "Show the context timeline ([limit] [--verbose]) without adding it to model context",
+        handler: async (args, ctx) => {
+            const words = (args ?? "").trim().split(/\s+/).filter(Boolean);
+            const limitWord = words.find((word) => /^\d+$/.test(word));
+            const params = {
+                verbose: words.includes("--verbose") || words.includes("-v"),
+                ...(limitWord ? { limit: Number(limitWord) } : {}),
+            };
+            const result = await timelineTool.execute("timeline-command", params, undefined, undefined, ctx as any);
+            const text = result.content.map((block) => block.type === "text" ? block.text : "").join("\n");
+            if (!ctx.hasUI) {
+                ctx.ui.notify(text, "info");
+                return;
+            }
+            await ctx.ui.custom((_tui, theme, _kb, done) => {
+                const container = new Container();
+                container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+                container.addChild(new Text(theme.fg("accent", theme.bold(" Context Timeline")), 1, 0));
+                container.addChild(new Spacer(1));
+                for (const line of text.split("\n")) container.addChild(new Text(line, 1, 0));
+                container.addChild(new Spacer(1));
+                container.addChild(new Text(theme.fg("dim", " Press any key to close"), 1, 0));
+                container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+                return {
+                    render: (w: number) => container.render(w),
+                    invalidate: () => container.invalidate(),
+                    handleInput: () => done(undefined),
+                };
+            }, { overlay: true });
+        },
+    });
 
     pi.registerTool({
         name: "context_compact",
@@ -521,6 +598,9 @@ export default function (pi: ExtensionAPI) {
             const request = findCompactRequest(ctx.sessionManager.getBranch(), _id);
             if (!request) {
                 throw new Error("context_compact: cannot locate the requesting tool call in session history.");
+            }
+            if (PendingRemove) {
+                throw new Error("context_compact: a context_remove is pending in this turn; compact in a later turn.");
             }
             await ensureCommandContext();
             if (!runtimeActive || _signal?.aborted) {
@@ -569,7 +649,83 @@ export default function (pi: ExtensionAPI) {
         },
     });
 
-    pi.on("turn_end", async (_event, ctx) => {
+    pi.registerTool({
+        name: "context_remove",
+        label: "Context Remove",
+        description: ContextRemoveDescription,
+        parameters: ContextRemoveParams,
+        async execute(_id, params: Static<typeof ContextRemoveParams>, _signal, _onUpdate, ctx) {
+            const sm = ctx.sessionManager as SessionManager;
+            const request = findCompactRequest(sm.getBranch(), _id, "context_remove");
+            if (!request) {
+                throw new Error("context_remove: cannot locate the requesting tool call in session history.");
+            }
+            if (CompactParams) throw new Error("context_remove: a context_compact is pending; remove in a later turn.");
+            if (PendingRemove) throw new Error("context_remove: only one context_remove is allowed per turn.");
+
+            const plan = planRemoval(sm, {
+                afterId: resolveTargetId(sm, params.after),
+                untilId: resolveTargetId(sm, params.until),
+                requestLeaf: request.requestLeaf,
+                afterName: params.after,
+                untilName: params.until,
+                summary: params.summary,
+            });
+            validateRemoval(sm, plan.drafts);
+            // Edits are committed at this turn's end through Pi's boundary drafts,
+            // so the model's next request is built from the edited projection.
+            PendingRemove = { requestLeaf: request.requestLeaf, plan };
+
+            const r = plan.record;
+            const lines = [
+                `context_remove scheduled: ${r.count} entries (~${formatTokens(r.tokens)} tokens) leave model context before your next request.`,
+                `Span: ${r.firstId}..${r.lastId}. Gap note hosted on ${r.markerId}.`,
+                ...(plan.checkpoints.length ? [`Checkpoints inside the span stay on their entries, marked removed: ${plan.checkpoints.join(", ")}.`] : []),
+                ...plan.notes.map((note) => `Note: ${note}.`),
+                `Entry IDs are unchanged. Originals stay in session history: context_read({ id: "${r.firstId}", until: "${r.lastId}" }).`,
+            ];
+            return { content: [{ type: "text", text: lines.join("\n") }], details: { record: r } };
+        },
+    });
+
+    pi.registerTool({
+        name: "context_read",
+        label: "Context Read",
+        description: ContextReadDescription,
+        parameters: ContextReadParams,
+        async execute(_id, params: Static<typeof ContextReadParams>, _signal, _onUpdate, ctx) {
+            const sm = ctx.sessionManager as SessionManager;
+            const id = resolveTargetId(sm, params.id);
+            const entry = sm.getEntry(id);
+            if (!entry) throw new Error(`context_read: entry '${params.id}' not found.`);
+            let entries: SessionEntry[] = [entry];
+            let untilId: string | undefined;
+            if (params.until) {
+                untilId = resolveTargetId(sm, params.until);
+                if (!sm.getEntry(untilId)) throw new Error(`context_read: entry '${params.until}' not found.`);
+                const path = sm.getBranch(untilId);
+                const start = path.findIndex((candidate) => candidate.id === id);
+                if (start < 0) throw new Error("context_read: 'id' must be an ancestor of 'until'.");
+                entries = path.slice(start);
+            }
+            const maxChars = params.maxChars && params.maxChars > 0 ? params.maxChars : 20000;
+            return { content: readEntries(sm, entries, { maxChars, untilId }), details: {} };
+        },
+    });
+
+    pi.on("turn_end", async (event, ctx) => {
+        const pending = PendingRemove;
+        if (pending && event?.messageEntryId === pending.requestLeaf) {
+            PendingRemove = null;
+            // Labels make removals visible in /tree, which ignores context edits.
+            const sm = ctx.sessionManager as SessionManager;
+            for (const id of pending.plan.foldedMarkerIds) {
+                if (sm.getLabel(id)?.startsWith(RemovalLabelPrefix)) pi.setLabel(id, undefined);
+            }
+            const { markerId, firstId, lastId } = pending.plan.record;
+            if (!sm.getLabel(markerId)) pi.setLabel(markerId, `${RemovalLabelPrefix}${firstId}..${lastId}`);
+            return { entries: [...(event.entries ?? []), ...pending.plan.drafts] };
+        }
         if (!CompactParams) {
             return
         }
@@ -577,6 +733,15 @@ export default function (pi: ExtensionAPI) {
     });
 
     pi.on("agent_end", async (_event, ctx) => {
+        if (PendingRemove) {
+            // The requesting turn never reached its turn_end boundary (e.g. aborted).
+            PendingRemove = null;
+            pi.sendMessage({
+                customType: PiContextCustomMessageType,
+                content: "context_remove was not applied: the turn ended before its edits were committed. Inspect context_timeline and retry if still useful.",
+                display: false,
+            }, { deliverAs: "nextTurn" });
+        }
         if (!CompactParams) {
             return
         }

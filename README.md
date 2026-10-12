@@ -14,6 +14,8 @@ Current versions intentionally use conversation-native names instead:
 - `context_checkpoint`
 - `context_timeline`
 - `context_compact`
+- `context_remove`
+- `context_read`
 
 These tools manage **conversation history**, not repository state. They should not be treated as Git commands or as replacements for real `git tag`, `git log`, or `git checkout`. Context navigation does not modify or roll back files, running processes, browser state, tickets, databases, or remote services.
 
@@ -27,7 +29,7 @@ pi install npm:pi-context
 
 ### For Humans
 
-ACM (**A**gentic **C**ontext **M**anagement) works automatically with Pi >= 0.84.2. Before compacting, the extension acquires command context if needed; no manual `/acm` is required.
+Requires Pi >= 0.87.0 (native `context_edit` entries). ACM (**A**gentic **C**ontext **M**anagement) works automatically. Before compacting, the extension acquires command context if needed; no manual `/acm` is required.
 
 `/acm` and `/acm <task>` remain available for compatibility.
 
@@ -35,7 +37,15 @@ ACM (**A**gentic **C**ontext **M**anagement) works automatically with Pi >= 0.84
 
 Use checkpoint names ending in `-start`, `-done`, `-pivot`, `-pause`, or `-resume` to declare a task or phase change, keeping the scope prefix consistent within a phase's lifecycle (for example `parser-investigation-start` → `parser-investigation-done`). Other names remain valid ordinary anchors. Timeline displays the parsed phase next to each label, folds hidden intervals with message counts and approximate tokens using Pi's heuristic, and marks off-path summaries. Interval estimates describe historical content, exclude internal context-management traffic, and are not exact current-model occupancy or reclaimable space.
 
-Open a visual dashboard to inspect context-window usage and token distribution (similar to `claude code /context`).
+Show the same structural timeline the agent sees, without adding it to model context:
+
+```bash
+/timeline [limit] [--verbose]
+```
+
+Removed spans appear as `[REMOVED]` gap notes. Pi's `/tree` ignores context edits, so it still shows removed entries; the gap note's host entry carries a `removed:<first>..<last>` label there instead.
+
+Open a visual dashboard to inspect context-window usage and token distribution (similar to `claude code /context`). It counts the edited context, so removed content is excluded.
 
 ```bash
 /context
@@ -55,7 +65,7 @@ Open `report/session-token-chart.html` in a browser. See [session analysis docum
 
 ### For Agents
 
-This extension adds the `context-management` skill, which guides agents to keep the active conversation as the smallest sufficient working set for the next step. It includes three core tools:
+This extension adds the `context-management` skill, which guides agents to keep the active conversation as the smallest sufficient working set for the next step. It includes five tools:
 
 1. **🔖 Anchor (`context_checkpoint`)**
    Label a meaningful conversation node with a unique semantic checkpoint name, such as `parser-investigation-start` and `parser-investigation-done`.
@@ -65,3 +75,9 @@ This extension adds the `context-management` skill, which guides agents to keep 
 
 3. **⏪ Compact (`context_compact`)**
    Create a summarized continuation branch from an earlier checkpoint, history node, or `root`. The summary should restore the useful state after the target: current task, decisions, external side effects such as changed files or remote updates, validation state, source anchors, and the explicit next step.
+
+4. **✂️ Remove (`context_remove`)**
+   Remove a middle span (strictly after `after`, through `until`) from model context while keeping later work raw. Uses Pi's append-only `context_edit` entries: nothing is copied or deleted, entry IDs and labels stay put, and usage is not duplicated. A gap note (the agent's summary, or an automatic one) marks where the span was. Spans snap so tool calls stay paired with results, and overlapping earlier removals are folded in. The provider prefix cache is re-read from the span onward.
+
+5. **📖 Read (`context_read`)**
+   Read the original content of any entry or path (`id` through `until`), ignoring context edits. Used to recover details from removed spans; the result is appended at the end of context, nothing is restored in place.

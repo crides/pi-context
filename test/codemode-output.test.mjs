@@ -81,6 +81,11 @@ function createHarness({ order = "t1;compact;t2", navigation = "ok", direct = fa
             },
         },
         _resolveIdleWaitIfIdle: () => {},
+        // SDK >= 0.87 rebuilds model state from the canonical projection after
+        // navigation. Use the real refresh; tool loadout restore is out of scope here.
+        _entryIdsByMessage: new WeakMap(),
+        _refreshFinalizedContext() { return AgentSession.prototype._refreshFinalizedContext.call(this); },
+        _restoreToolsFromTranscript: () => {},
         sessionFile: sm.getSessionFile(),
         sessionId: sm.getSessionId(),
         getContextUsage: () => undefined,
