@@ -225,7 +225,7 @@ test("/timeline command renders the tool output without touching the session", a
     const before = h.sm.getEntries().length;
     let rendered;
     await h.commands.get("timeline").handler("--verbose 100", {
-        ...h.ctx, hasUI: true,
+        ...h.ctx, mode: "tui", hasUI: true,
         ui: {
             notify: () => assert.fail("UI is available"),
             custom: async (factory) => {
@@ -238,9 +238,47 @@ test("/timeline command renders the tool output without touching the session", a
     assert.match(rendered, /\[REMOVED\] Removed 5 context entries/);
     assert.equal(h.sm.getEntries().length, before, "nothing appended");
 
-    const notes = [];
-    await h.commands.get("timeline").handler("", { ...h.ctx, hasUI: false, ui: { notify: (t) => notes.push(t) } });
-    assert.match(notes[0], /\[REMOVED\]/);
+    // RPC reports hasUI but cannot host terminal components: plain text via notify.
+    for (const mode of ["rpc", "print"]) {
+        const notes = [];
+        await h.commands.get("timeline").handler("", {
+            ...h.ctx, mode, hasUI: mode === "rpc",
+            ui: { notify: (t) => notes.push(t), custom: () => assert.fail("no custom outside TUI") },
+        });
+        assert.match(notes[0], /\[REMOVED\]/);
+    }
+});
+
+test("/timeline overlay scrolls when taller than the terminal", async () => {
+    const h = createHarness();
+    let component;
+    let closed = false;
+    let renders = 0;
+    await h.commands.get("timeline").handler("--verbose", {
+        ...h.ctx, mode: "tui",
+        ui: {
+            notify: () => assert.fail("UI is available"),
+            custom: async (factory) => {
+                const theme = { fg: (_c, v) => v, bold: (v) => v };
+                const tui = { terminal: { rows: 10 }, requestRender: () => renders++ };
+                component = factory(tui, theme, {}, () => { closed = true; });
+            },
+        },
+    });
+    const first = component.render(250).join("\n");
+    // 10 rows - 2 header - 2 footer - 2 margin = 4 visible body lines.
+    assert.match(first, /lines 1-4 of \d+/);
+    component.handleInput("\x1b[B");
+    assert.equal(renders, 1);
+    assert.match(component.render(250).join("\n"), /lines 2-5 of/);
+    component.handleInput("\x1b[F");
+    const end = component.render(250).join("\n");
+    const [, from, to, total] = end.match(/lines (\d+)-(\d+) of (\d+)/).map(Number);
+    assert.equal(to, total);
+    assert.equal(to - from + 1, 4);
+    assert.equal(closed, false);
+    component.handleInput("q");
+    assert.equal(closed, true);
 });
 
 test("/context dashboard does not count removed content", async () => {
@@ -253,7 +291,7 @@ test("/context dashboard does not count removed content", async () => {
     registerDashboard({ registerCommand: (n, d) => commands.set(n, d), getActiveTools: () => [], getAllTools: () => [] });
     let rendered;
     await commands.get("context").handler("", {
-        sessionManager: sm, getSystemPrompt: () => "",
+        mode: "tui", sessionManager: sm, getSystemPrompt: () => "",
         getContextUsage: () => ({ tokens: 10000, contextWindow: 20000, percent: 50 }),
         ui: {
             notify: () => assert.fail("usage is available"),
@@ -265,6 +303,16 @@ test("/context dashboard does not count removed content", async () => {
     });
     assert.match(rendered, /Messages\s+10k/);
     assert.doesNotMatch(rendered, /Tool Call\s+5k/);
+});
+
+test("no usage warning on the turn a removal commits or while it is pending", async () => {
+    const h = createHarness();
+    h.ctx.getContextUsage = () => ({ percent: 80, tokens: 800_000, contextWindow: 1_000_000 });
+    await h.remove({ after: "parser-investigation-start", until: "parser-investigation-done" });
+    const other = await h.events.get("turn_end")({ messageEntryId: h.ids.a4, entries: [] }, h.ctx);
+    assert.equal(other, undefined, "pending removal suppresses warnings");
+    const boundary = await h.commitTurn();
+    assert.equal(boundary.entries.some((d) => d.customType === "pi-context-usage"), false);
 });
 
 test("one remove per turn; compact refused while a remove is pending", async () => {

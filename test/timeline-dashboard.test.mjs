@@ -45,6 +45,7 @@ for (const retained of [false, true]) {
             : { role: "toolResult", toolName: "read", toolCallId: "c", content, isError: false, timestamp: 0 };
         let rendered;
         await commands.get("context").handler("", {
+            mode: "tui",
             sessionManager: { buildSessionProjection: () => ({ entries: [], messages: [message] }) }, getSystemPrompt: () => "",
             getContextUsage: () => ({ tokens: 10000, contextWindow: 20000, percent: 50 }),
             ui: {

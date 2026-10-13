@@ -1,9 +1,8 @@
 import {
   type ExtensionAPI,
   type SessionManager,
-  DynamicBorder,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, Spacer } from "@earendil-works/pi-tui";
+import { showTextOverlay } from "./overlay.js";
 import { formatTokens, RetainedCodemodeOutputType } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
@@ -86,11 +85,8 @@ export default function (pi: ExtensionAPI) {
       const toolUseTokens = Math.round(toolUseTokensRaw * ratio);
       const toolResultTokens = Math.round(toolResultTokensRaw * ratio);
 
-      await ctx.ui.custom((tui, theme, kb, done) => {
-        const container = new Container();
-        container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-        container.addChild(new Text(theme.fg("accent", theme.bold(" Context Usage")), 1, 0));
-        container.addChild(new Spacer(1));
+      await showTextOverlay(ctx, "Context Usage", (theme) => {
+        const out: string[] = [""];
 
         // Grouped by function and color
         const categories = [
@@ -150,19 +146,12 @@ export default function (pi: ExtensionAPI) {
         for (let i = 0; i < maxH; i++) {
           const left = (gridLines[i] || "").padEnd(leftSideWidth);
           const right = allDetailLines[i] || "";
-          container.addChild(new Text(`    ${left}      ${right}`, 1, 0));
+          out.push(`    ${left}      ${right}`);
         }
 
-        container.addChild(new Spacer(1));
-        container.addChild(new Text(theme.fg("dim", " Press any key to close"), 1, 0));
-        container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-        return {
-          render: (w) => container.render(w),
-          invalidate: () => container.invalidate(),
-          handleInput: (data) => done(undefined),
-        };
-      }, { overlay: true });
+        out.push("");
+        return out;
+      });
     }
   });
 }

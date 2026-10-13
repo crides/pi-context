@@ -4,9 +4,9 @@ import {
     type SessionEntry,
     type ExtensionCommandContext,
     defineTool,
-    DynamicBorder,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { showTextOverlay } from "./overlay.js";
+import { parseUsageThresholds, usageWarningDrafts } from "./usage.js";
 import {
     Type,
     type Static,
@@ -191,6 +191,7 @@ export default function (pi: ExtensionAPI) {
     let CommandCtx: ExtensionCommandContext | null = null;
     let CompactParams: PendingCompactRequest | null = null;
     let PendingRemove: { requestLeaf: string; plan: RemovalPlan } | null = null;
+    const usageThresholds = parseUsageThresholds(process.env.PI_CONTEXT_USAGE_WARNINGS);
     let runtimeActive = true;
     let pendingCommandContext: Promise<ExtensionCommandContext> | null = null;
     let resolveCommandContext: ((ctx: ExtensionCommandContext) => void) | undefined;
@@ -565,25 +566,7 @@ export default function (pi: ExtensionAPI) {
             };
             const result = await timelineTool.execute("timeline-command", params, undefined, undefined, ctx as any);
             const text = result.content.map((block) => block.type === "text" ? block.text : "").join("\n");
-            if (!ctx.hasUI) {
-                ctx.ui.notify(text, "info");
-                return;
-            }
-            await ctx.ui.custom((_tui, theme, _kb, done) => {
-                const container = new Container();
-                container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-                container.addChild(new Text(theme.fg("accent", theme.bold(" Context Timeline")), 1, 0));
-                container.addChild(new Spacer(1));
-                for (const line of text.split("\n")) container.addChild(new Text(line, 1, 0));
-                container.addChild(new Spacer(1));
-                container.addChild(new Text(theme.fg("dim", " Press any key to close"), 1, 0));
-                container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-                return {
-                    render: (w: number) => container.render(w),
-                    invalidate: () => container.invalidate(),
-                    handleInput: () => done(undefined),
-                };
-            }, { overlay: true });
+            await showTextOverlay(ctx, "Context Timeline", () => ["", ...text.split("\n")]);
         },
     });
 
@@ -726,10 +709,17 @@ export default function (pi: ExtensionAPI) {
             if (!sm.getLabel(markerId)) pi.setLabel(markerId, `${RemovalLabelPrefix}${firstId}..${lastId}`);
             return { entries: [...(event.entries ?? []), ...pending.plan.drafts] };
         }
-        if (!CompactParams) {
-            return
+        if (CompactParams) {
+            // A warning entry here would count as advancement and cancel the compaction.
+            ctx.abort();
+            return;
         }
-        ctx.abort()
+        // A removal still waiting for its own boundary will change usage; warn afterwards.
+        if (PendingRemove) return;
+        const sm = ctx.sessionManager as SessionManager | undefined;
+        if (!sm) return;
+        const drafts = usageWarningDrafts(sm.getBranch(), ctx.getContextUsage?.(), usageThresholds);
+        if (drafts.length) return { entries: [...(event?.entries ?? []), ...drafts] };
     });
 
     pi.on("agent_end", async (_event, ctx) => {

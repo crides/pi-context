@@ -176,6 +176,10 @@ Use it when a large, stale span sits in the middle of the path but the work afte
 
 Use it to recover a specific detail from a removed span or another branch, instead of guessing or redoing work. Pass `id` (and optionally `until`) from the gap note or timeline. Read only what the next action needs; prefer re-checking an external source (file, command) when that is cheaper.
 
+### Usage notes
+
+A hidden `[context usage] Passed N%` note appears when context first crosses 25%, 50%, or 75%. It is a fact, not an instruction: at the next phase boundary, check `context_timeline` and apply the compact gate. Do not interrupt active exploration or compact merely because a note arrived.
+
 ## Compact gate
 
 Before calling `context_compact`, require all four:

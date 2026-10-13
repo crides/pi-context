@@ -43,6 +43,12 @@ Show the same structural timeline the agent sees, without adding it to model con
 /timeline [limit] [--verbose]
 ```
 
+### Context usage notes
+
+When context usage first crosses 25%, 50%, or 75%, the extension adds a hidden note to model context (about 40 tokens, appended at the end so the prompt cache is unaffected). It states the usage and points to the compact gate; it does not tell the model to compact. Warnings re-arm when usage falls below a threshold (after a remove or compact). Configure with `PI_CONTEXT_USAGE_WARNINGS`, e.g. `60,90`, or `off` to disable.
+
+In the TUI, `/timeline` and `/context` open an overlay that scrolls when taller than the terminal (↑/↓, PgUp/PgDn, Home/End; q/Esc close). In RPC, JSON, and print modes they send the same content as plain text.
+
 Removed spans appear as `[REMOVED]` gap notes. Pi's `/tree` ignores context edits, so it still shows removed entries; the gap note's host entry carries a `removed:<first>..<last>` label there instead.
 
 Open a visual dashboard to inspect context-window usage and token distribution (similar to `claude code /context`). It counts the edited context, so removed content is excluded.
