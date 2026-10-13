@@ -4,9 +4,11 @@ import {
     type SessionEntry,
     type ExtensionCommandContext,
     defineTool,
+    getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { showTextOverlay } from "./overlay.js";
-import { parseUsageThresholds, usageWarningDrafts } from "./usage.js";
+import { usageWarningDrafts } from "./usage.js";
+import { describeUsageConfig, resolveUsageConfig, UsageEnvVar } from "./config.js";
 import {
     Type,
     type Static,
@@ -191,7 +193,24 @@ export default function (pi: ExtensionAPI) {
     let CommandCtx: ExtensionCommandContext | null = null;
     let CompactParams: PendingCompactRequest | null = null;
     let PendingRemove: { requestLeaf: string; plan: RemovalPlan } | null = null;
-    const usageThresholds = parseUsageThresholds(process.env.PI_CONTEXT_USAGE_WARNINGS);
+    // Env var > <cwd>/.pi/pi-context.json > <agent dir>/pi-context.json > defaults.
+    // Resolved at load and again at session_start, so /reload picks up file edits.
+    const loadUsageConfig = (cwd: string) => resolveUsageConfig({ env: process.env[UsageEnvVar], cwd, agentDir: getAgentDir() });
+    let usageConfig = loadUsageConfig(process.cwd());
+
+    pi.on("session_start", async (_event, ctx) => {
+        usageConfig = loadUsageConfig(ctx.cwd ?? process.cwd());
+        if (usageConfig.warnings.length) {
+            ctx.ui.notify(`pi-context config:\n${usageConfig.warnings.join("\n")}`, "warning");
+        }
+    });
+
+    pi.registerCommand("context-warnings", {
+        description: "Show active context usage warning thresholds and where they come from",
+        handler: async (_args, ctx) => {
+            ctx.ui.notify(describeUsageConfig(loadUsageConfig(ctx.cwd ?? process.cwd())), "info");
+        },
+    });
     let runtimeActive = true;
     let pendingCommandContext: Promise<ExtensionCommandContext> | null = null;
     let resolveCommandContext: ((ctx: ExtensionCommandContext) => void) | undefined;
@@ -718,7 +737,7 @@ export default function (pi: ExtensionAPI) {
         if (PendingRemove) return;
         const sm = ctx.sessionManager as SessionManager | undefined;
         if (!sm) return;
-        const drafts = usageWarningDrafts(sm.getBranch(), ctx.getContextUsage?.(), usageThresholds);
+        const drafts = usageWarningDrafts(sm.getBranch(), ctx.getContextUsage?.(), usageConfig.thresholds);
         if (drafts.length) return { entries: [...(event?.entries ?? []), ...drafts] };
     });
 

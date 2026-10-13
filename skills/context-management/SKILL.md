@@ -178,7 +178,7 @@ Use it to recover a specific detail from a removed span or another branch, inste
 
 ### Usage notes
 
-A hidden `[context usage] Passed N%` note appears when context first crosses 25%, 50%, or 75%. It is a fact, not an instruction: at the next phase boundary, check `context_timeline` and apply the compact gate. Do not interrupt active exploration or compact merely because a note arrived.
+A hidden `[pi-context extension, automatic; not from the user] Context usage passed N%` note appears when context first crosses 25%, 50%, or 75%. It is a fact, not an instruction: at the next phase boundary, check `context_timeline` and apply the compact gate. Do not interrupt active exploration or compact merely because a note arrived.
 
 ## Compact gate
 

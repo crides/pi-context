@@ -45,7 +45,18 @@ Show the same structural timeline the agent sees, without adding it to model con
 
 ### Context usage notes
 
-When context usage first crosses 25%, 50%, or 75%, the extension adds a hidden note to model context (about 40 tokens, appended at the end so the prompt cache is unaffected). It states the usage and points to the compact gate; it does not tell the model to compact. Warnings re-arm when usage falls below a threshold (after a remove or compact). Configure with `PI_CONTEXT_USAGE_WARNINGS`, e.g. `60,90`, or `off` to disable.
+When context usage first crosses 25%, 50%, or 75%, the extension adds a hidden note to model context, prefixed `[pi-context extension, automatic; not from the user]` so the model does not mistake it for user input (about 50 tokens, appended at the end so the prompt cache is unaffected). It states the usage and points to the compact gate; it does not tell the model to compact. Warnings re-arm when usage falls below a threshold (after a remove or compact). Configure thresholds with a JSON file or an environment variable (highest precedence first):
+
+1. `PI_CONTEXT_USAGE_WARNINGS`, e.g. `60,90`, or `off`
+2. Project file `<project>/.pi/pi-context.json`
+3. User file `~/.pi/agent/pi-context.json`
+4. Defaults: 25, 50, 75
+
+```json
+{ "usageWarnings": [60, 90] }
+```
+
+Use `"usageWarnings": "off"` (or `[]`) to disable. Invalid values are ignored with a warning at session start and the next source is used. Files are read at session start, so `/reload` applies edits. `/context-warnings` shows the active thresholds, their source, and both file paths. Note: unlike Pi's own project settings, the project file is read without a project-trust check; it can only change warning thresholds.
 
 In the TUI, `/timeline` and `/context` open an overlay that scrolls when taller than the terminal (↑/↓, PgUp/PgDn, Home/End; q/Esc close). In RPC, JSON, and print modes they send the same content as plain text.
 

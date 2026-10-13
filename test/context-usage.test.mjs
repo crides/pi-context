@@ -3,9 +3,10 @@ import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import registerContext from "../dist/index.js";
-import { parseUsageThresholds } from "../dist/usage.js";
+import { validateThresholds } from "../dist/config.js";
 
-function createHarness(env) {
+// Explicit env by default so a real ~/.pi/agent/pi-context.json cannot affect these tests.
+function createHarness(env = "25,50,75") {
     const previous = process.env.PI_CONTEXT_USAGE_WARNINGS;
     if (env === undefined) delete process.env.PI_CONTEXT_USAGE_WARNINGS;
     else process.env.PI_CONTEXT_USAGE_WARNINGS = env;
@@ -59,10 +60,10 @@ test("warning is hidden, model-visible, and informational", async () => {
     const h = createHarness();
     const [draft] = await h.turn(52);
     assert.equal(draft.display, false);
-    assert.match(draft.content, /Passed 50%: 52\.0% \(520k\/1\.0M\)/);
+    assert.match(draft.content, /^\[pi-context extension, automatic; not from the user\] Context usage passed 50%: 52\.0% \(520k\/1\.0M\)/);
     assert.match(draft.content, /not an instruction/);
     const projected = JSON.stringify(h.sm.buildSessionProjection().messages);
-    assert.match(projected, /\[context usage\] Passed 50%/);
+    assert.match(projected, /Context usage passed 50%/);
 });
 
 test("unknown usage and disabled thresholds emit nothing", async () => {
@@ -74,6 +75,7 @@ test("custom thresholds", async () => {
     const h = createHarness("60, 90");
     assert.deepEqual(await h.turn(55), []);
     assert.deepEqual(warned(await h.turn(61)), [60]);
-    assert.deepEqual(parseUsageThresholds("abc"), [25, 50, 75]);
-    assert.deepEqual(parseUsageThresholds("75,25,25,150"), [25, 75]);
+    assert.equal(validateThresholds("abc"), undefined);
+    assert.equal(validateThresholds("75,25,150"), undefined, "one bad value rejects the whole list");
+    assert.deepEqual(validateThresholds("75,25,25"), [25, 75]);
 });
